@@ -10,24 +10,23 @@
 ; read starts about two sector times after the last one ended and a track of 16 sectors
 ; takes about two disk revolutions instead of sixteen.
 ;
-; Two ways to play a song:
-;   STREAM_LOAD     read all of it into RAM at $1000 first (at most 7 slots = 28 KB), then play.
-;   STREAM_OPEN     fill a ring of 7 slots (4 KB, 16 sectors each) at $1000-$7FFF, then keep it
-;   STREAM_SERVICE  filled from the main loop. A disk read stops the CPU, so each refill pauses
-;                   the music (MB_PAUSE / MB_RESUME) for about half a second.
-; The ring needs a 64-byte copy of the first slot's start at $8000, so that a frame
-; running over the end of the last slot reads on into the start of the first one.
+; The song is always streamed: STREAM_OPEN fills a ring of RING_SLOTS slots (mb_layout.inc: 4 slots of
+; 4 sectors) and STREAM_SERVICE keeps it filled from the main loop. A song that fits the ring is
+; read once and never touched again. A disk read stops the CPU, so each refill pauses the music
+; (MB_PAUSE / MB_RESUME) for as long as the sectors take.
+; The ring needs a 64-byte copy of the first slot's start right behind it (TAIL_HI), so that a
+; frame running over the end of the last slot reads on into the start of the first one.
 ; Needs DOS 3.3 in memory (RWTS at $03D9; slot, drive and device table are copied from
-; DOS's own IOB at $B7E8).
+; DOS's own IOB, found with LOCRPL at $03E3).
 
         .setcpu "6502"
 
         .import MB_POS, MB_PAUSE, MB_RESUME, MB_TICK, MB_PLAY, MB_RING
-        .export FILE_OPEN, STREAM_LOAD, STREAM_OPEN, STREAM_SERVICE, STREAM_STOP, STREAM_RESTART
+        .export FILE_OPEN, STREAM_OPEN, STREAM_SERVICE, STREAM_STOP, STREAM_RESTART
         .export f_skip
 
 RWTS            = $03D9
-DOS_IOB         = $B7E8         ; DOS 3.3's own IOB: slot, drive and device table to copy
+LOCRPL          = $03E3         ; DOS 3.3: returns the address of its own IOB in Y (low) / A (high)
 MOTOR_OFF       = $C088         ; + slot * 16
 MOTOR_ON        = $C089
 SPINUP_TICKS    = 64            ; keep playing this long after switching the drive on (1.3 s at 50 Hz)
@@ -57,16 +56,14 @@ BIN_HEADER      = 4
 LIST_FIRST      = 12            ; offset of the first track/sector pair in a track/sector list
 LIST_PAIRS      = 122
 
-RING_HI         = $10           ; ring starts at $1000
-SLOT_PAGES      = $10           ; 4 KB per slot
-RING_SLOTS      = 7
-TAIL_HI         = RING_HI + RING_SLOTS * SLOT_PAGES     ; $80: copy of slot 0's start
-TAIL_BYTES      = 64
+        .include "mb_layout.inc"
 
 NAMEPTR         = $EB           ; $EB/$EC: the name being looked up (free in Applesoft)
+IOBPTR          = $ED           ; $ED/$EE: DOS's IOB, only inside FILE_OPEN
 
         .segment "BSS"
 iob:            .res IOB_SIZE
+dosiob:         .res IOB_SIZE   ; copy of DOS's IOB: the slot, drive and device table to use
 nlen:           .res 1          ; length of the file name
 ebase:          .res 1          ; catalog entry being compared
 kk:             .res 1
@@ -77,7 +74,6 @@ f_skip:         .res 1          ; bytes of header in front of the song data (0 o
 ts_j:           .res 1          ; next pair to use in the list now in secbuf
 eof:            .res 1          ; 1 when the file has no more sectors
 nsec:           .res 1          ; sectors read into the slot being filled
-left:           .res 1
 dest_hi:        .res 1
 fill_slot:      .res 1
 st_wait:        .res 1          ; 1 while the drive is spinning up for a refill
@@ -95,6 +91,14 @@ FILE_OPEN:
         sta     NAMEPTR
         stx     NAMEPTR+1
         sty     nlen
+        jsr     LOCRPL          ; the disk DOS used last: remember its IOB
+        sty     IOBPTR
+        sta     IOBPTR+1
+        ldy     #IOB_SIZE - 1
+@iob:   lda     (IOBPTR),y
+        sta     dosiob,y
+        dey
+        bpl     @iob
         lda     #VTOC_TRACK
         ldx     #0
         jsr     read_secbuf
@@ -165,41 +169,7 @@ FILE_OPEN:
 @nf:    sec
 @ret:   rts
 
-; Load the open file into RAM at $1000 (at most 7 slots). C set = disk error or too big.
-STREAM_LOAD:
-        jsr     rewind
-        bcs     @err
-        lda     #RING_HI
-        sta     dest_hi
-        lda     #RING_SLOTS
-        sta     left
-@next:  lda     eof
-        bne     @done
-        jsr     read_slot
-        bcs     @err
-        lda     dest_hi
-        clc
-        adc     #SLOT_PAGES
-        sta     dest_hi
-        dec     left
-        bne     @next
-        jsr     next_sector     ; the 7 slots are full: there must be nothing more
-        bcc     @big
-        cmp     #1
-        beq     @big            ; disk error
-@done:  clc
-        bcc     @off
-@big:   sec
-@off:   php
-        jsr     motor_off
-        plp
-        rts
-@err:   php
-        jsr     motor_off
-        plp
-        rts
-
-; Fill the ring (up to 7 slots) from the open file. C set = disk error.
+; Fill the ring (RING_SLOTS slots) from the open file. C set = disk error.
 ; The drive keeps spinning afterwards; call STREAM_STOP when the song is over.
 STREAM_OPEN:
         jsr     rewind
@@ -212,13 +182,12 @@ STREAM_OPEN:
         jsr     fill_one
         bcs     @err
         lda     fill_slot
-        bne     @fill           ; fill_slot wraps to 0 after the 7th slot
+        bne     @fill           ; fill_slot wraps to 0 after the last slot
 @done:  clc
 @err:   rts                     ; the motor keeps running: spinning it up again costs about a second
 
 ; Play the streamed song again from the start, e.g. when MB_POLL reports that it has ended:
-; refill the ring from the file's start (the music is silent meanwhile, about 0.5 s per
-; slot up to 7), then start the song with MB_PLAY and MB_RING. Needs a FILE_OPEN first.
+; refill the ring from the file's start (the music is silent meanwhile), then start the song with MB_PLAY and MB_RING. Needs a FILE_OPEN first.
 ; C set = disk error or not an MBF file. Keep calling STREAM_SERVICE as before.
 STREAM_RESTART:
         jsr     STREAM_OPEN
@@ -228,15 +197,15 @@ STREAM_RESTART:
         jsr     MB_PLAY
         bcs     @ret
         lda     #TAIL_HI
-        ldx     #RING_SLOTS * SLOT_PAGES
+        ldx     #RING_PAGES
         jsr     MB_RING
         clc
 @ret:   rts
 
 ; Call from the main loop. When the music has moved on from a slot, refill it with the
-; next 16 sectors. A refill is not urgent (the ring holds several slots ahead), so first the
+; next SLOT_PAGES sectors. A refill is not urgent (the ring holds several slots ahead), so first the
 ; drive is switched on and the music plays on for SPINUP_TICKS while it spins up; the
-; read itself then pauses the music for about half a second. C set = disk error.
+; read itself then pauses the music while the sectors come in. C set = disk error.
 STREAM_SERVICE:
         lda     eof
         bne     @none
@@ -249,13 +218,12 @@ STREAM_SERVICE:
 @inring:
         sec
         sbc     #RING_HI
+        .repeat SLOT_SHIFT
         lsr
-        lsr
-        lsr
-        lsr                     ; A = slot the music is in
+        .endrepeat              ; A = slot the music is in
         cmp     fill_slot
         beq     @none           ; that slot is still being played
-        ldx     DOS_IOB+IOB_SLOT
+        ldx     dosiob+IOB_SLOT
         lda     MOTOR_ON,x      ; start the drive; RWTS would otherwise wait a second for it
         jsr     MB_TICK
         sta     st_tick
@@ -280,13 +248,12 @@ STREAM_SERVICE:
 @none:  clc
         rts
 
-; Read the next 16 sectors into ring slot `fill_slot`, then advance. C set = disk error.
+; Read the next sectors into ring slot `fill_slot`, then advance. C set = disk error.
 fill_one:
         lda     fill_slot
+        .repeat SLOT_SHIFT
         asl
-        asl
-        asl
-        asl                     ; slot * SLOT_PAGES
+        .endrepeat              ; slot * SLOT_PAGES
         clc
         adc     #RING_HI
         sta     dest_hi
@@ -352,7 +319,7 @@ next_sector:
         sec
         rts
 
-; Read the next 16 sectors of the file (fewer at the end) into pages dest_hi and up.
+; Read the next SLOT_PAGES sectors of the file (fewer at the end) into pages dest_hi and up.
 read_slot:
         lda     #0
         sta     nsec
@@ -402,7 +369,7 @@ rw_sector:
 ; Start from a copy of DOS's own IOB (slot, drive, device table), set up for a read.
 init_iob:
         ldy     #IOB_SIZE - 1
-@c:     lda     DOS_IOB,y
+@c:     lda     dosiob,y
         sta     iob,y
         dey
         bpl     @c
@@ -420,10 +387,10 @@ init_iob:
         sta     iob+IOB_CMD     ; command: read
         rts
 
-; Turn the drive motor off. Call when a streamed song ends (STREAM_LOAD does it itself).
+; Turn the drive motor off. Call when a streamed song ends .
 STREAM_STOP:
 motor_off:
-        ldx     DOS_IOB+IOB_SLOT
+        ldx     dosiob+IOB_SLOT
         lda     MOTOR_OFF,x
         rts
 

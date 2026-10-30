@@ -2,10 +2,11 @@
 ;
 ; The same compiler as src/tune/tune2mbf.py, step for step: both must produce the same bytes
 ; (the tests in test/ check that). The tune format is described there. Up to 6 voices
-; separated by "/"; the song is built at OUT = $6000 and is at most $1F00 bytes long.
+; separated by "/"; the song is built in the player's ring (RING_HI, see mb_layout.inc) and is
+; a little less than 4 KB long at most.
 ;
 ;   TUNE_COMPILE   in:  A/X = low/high address of the tune text, Y = its length (0-255)
-;                  out: the .MBF file at $6000, ready for MB_PLAY
+;                  out: the .MBF file at RING_HI * 256, ready for MB_PLAY
 ; Text bytes may have the high bit set or clear, upper or lower case.
 ; Zero page: $06-$09 and $EB-$EE (Applesoft leaves them alone).
 
@@ -18,8 +19,10 @@ OP              = $08           ; write pointer into the output
 CP              = $EB           ; where the current frame's count byte is
 SP              = $ED           ; source text while it is copied
 
-OUT_HI          = $60           ; output starts at $6000
-LIMIT_HI        = $7F           ; stop starting new frames at $7F00
+        .include "mb_layout.inc"
+
+OUT_HI          = RING_HI       ; output starts at the start of the ring
+LIMIT_HI        = TAIL_HI - 1   ; stop starting new frames on the last page of the ring
 MAX_VOICES      = 6
 WHOLE_120       = 100           ; ticks per whole note at 120 quarter notes a minute (50 Hz)
 WHOLE_TICKS     = 12000         ; the same at 1 quarter note a minute

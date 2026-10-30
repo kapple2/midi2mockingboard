@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check an AY write log from mb_test.lua against the .MBF file that was played.
+"""Check an AY write log from basic_test.lua against the .MBF file that was played.
 
-usage: check_log.py <log> <mbf> [--keys] [--stream] [--dump <ram dump>]
-                               [--slot N | --nocard | --bad]
+usage: check_log.py <log> <mbf> [--keys] [--stream] [--dump <ram dump>] [--hangul]
+                               [--nocard | --bad]
 
 Without --keys the whole song must match: the logged writes after the driver's
 startup silence must equal the MBF's writes, in order.  With --keys the sound
@@ -12,8 +12,10 @@ match, apart from chip 1 channels B and C while the effect owns them.
 --stream: the song was streamed from disk.  Each refill pauses the music; the
 driver tags the silence and volume-restore writes around it as "paused".  Those
 are checked separately, the gaps are measured, and the music must still match.
---dump: RAM $1000-$7FFF as the player left it at the start of the song; it must
-equal the first bytes of the .MBF file (checks the disk reads).
+--dump: the ring ($6900-$793F) as the player left it at the start of the song; it must
+equal the first 4 KB of the .MBF file (checks the disk reads).
+--hangul: the K-HANGEUL / KBASIC disk: the Hangul font, KBASIC and the CHRGET patch must be
+the same at the end as at the first note (basic_test.lua writes "#HANGUL same").
 """
 import struct
 import sys
@@ -23,7 +25,7 @@ SFX_ON_CHIP1 = {2, 3, 4, 5, 9, 10}
 SFX_BLIP = [(1, 2, 0xA0), (1, 3, 0x00), (1, 9, 0x0F), (1, 9, 0x0C), (1, 9, 0x09),
             (1, 9, 0x06), (1, 9, 0x03), (1, 9, 0x00)]
 MAX_GAP = 1.0           # seconds: the longest pause for one track refill that we accept
-RING_BYTES = 7 * 4096
+RING_BYTES = 4 * 1024      # the ring holds four 1 KB slots
 
 
 def load_mbf(path):
@@ -77,7 +79,7 @@ def main():
 
     if "--bad" in sys.argv:
         print("screen:", [row.strip() for row in screen if row.strip()][-4:])
-        if "NOT AN MBF1 FILE" not in text:
+        if "FILE TYPE MISMATCH" not in text:
             sys.exit("FAIL: player did not reject the file")
         if any(w[2] < 8 for w in writes):
             sys.exit("FAIL: the player wrote tone/mixer registers for a bad file")
@@ -86,26 +88,26 @@ def main():
     rate, frames, raw = load_mbf(mbf)
     if "--nocard" in sys.argv:
         print("screen:", [row.strip() for row in screen if row.strip()][-4:])
-        if "NO MOCKINGBOARD FOUND" not in text:
+        if "I/O ERROR" not in text:
             sys.exit("FAIL: player did not report a missing card")
         if writes:
             sys.exit(f"FAIL: {len(writes)} AY writes without a card")
         print("PASS")
         return
-    if arg("--slot"):
-        want = f"MOCKINGBOARD IN SLOT {arg('--slot')}"
-        print(f"expecting '{want}'")
-        if want not in text:
-            problems.append(f"screen does not say '{want}'")
+    if notes.get("#TIMEOUT"):
+        problems.append("MAME timed out (the BASIC lines did not finish)")
+    if "--hangul" in sys.argv:
+        print(f"Hangul font, KBASIC and CHRGET patch: {notes.get('#HANGUL')}")
+        if notes.get("#HANGUL") != "same":
+            problems.append("the Hangul font / KBASIC / CHRGET patch changed while the song played")
 
     if arg("--dump"):
         ram = open(arg("--dump"), "rb").read()
-        skip = 4 if len(raw) <= 8448 else 0       # a small song is a binary file: 4 bytes of header first
-        n = min(len(raw), RING_BYTES - skip)
-        if ram[skip:skip + n] == raw[:n]:
-            print(f"RAM at song start matches the file ({n} bytes)")
+        n = min(len(raw), RING_BYTES)
+        if ram[:n] == raw[:n]:
+            print(f"ring at song start matches the file ({n} bytes)")
         else:
-            bad = next(i for i in range(n) if ram[skip + i] != raw[i])
+            bad = next(i for i in range(n) if ram[i] != raw[i])
             problems.append(f"RAM differs from the file at offset {bad} (sector {bad // 256})")
 
     # The driver's startup only writes volumes 8-10 (silence); the first write to
@@ -114,9 +116,6 @@ def main():
     if start is None:
         sys.exit("FAIL: no song writes in the log")
     song = writes[start:]
-    if isinstance(notes.get("#CHOSE"), float):
-        # includes the time to type the letter and print a few lines, about 0.3 s
-        print(f"time from the L/S choice to the first note: {song[0][0] - notes['#CHOSE']:.2f} s")
     music = [w for w in song if not w[4]]
     paused = [w for w in song if w[4]]
     if not stream and paused:
@@ -160,14 +159,17 @@ def main():
         # writes the effect suppressed. Work out that state from the MBF itself.
         if len(after) > len(SFX_BLIP):
             t0 = got[0][0]
-            frame_at = round((after[len(SFX_BLIP)][0] - t0) * rate)
+
+            def stalled(t):         # seconds the music stood still (refill gaps) before time t
+                return sum(g[-1][0] - g[0][0] for g in gaps if g[0][0] < t)
+            frame_at = round((after[len(SFX_BLIP)][0] - t0 - stalled(after[len(SFX_BLIP)][0])) * rate)
             state = {}
             for fr in frames[:frame_at + 1]:
                 for c, r, v in fr:
                     state[(c, r)] = v
             want = [(1, r, state.get((1, r), 0)) for r in (2, 3, 4, 5, 9, 10)]
             print(f"music state at frame {frame_at}: {want}")
-            first_frame = round((after[0][0] - t0) * rate)
+            first_frame = round((after[0][0] - t0 - stalled(after[0][0])) * rate)
             held = [(f, c, r, v) for f in range(first_frame, frame_at + 1) for c, r, v in frames[f]
                     if c == 1 and r in SFX_ON_CHIP1]
             print(f"music writes held back during the effect (frames {first_frame}-{frame_at}): {len(held)}")
@@ -254,8 +256,8 @@ def main():
             if abs(drift_ppm) > 100:
                 problems.append(f"tick rate is off by {drift_ppm:.0f} ppm (limit 100)")
 
-    if "DONE" not in text:
-        problems.append("player did not print DONE")
+    if "FINISHED" not in text:
+        problems.append("the BASIC line never finished")
     print("screen:", [row.strip() for row in screen if row.strip()][-4:])
 
     if problems:

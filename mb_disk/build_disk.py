@@ -2,19 +2,19 @@
 """Build a bootable DOS 3.3 disk that plays .MBF songs on an Apple II Mockingboard.
 
 The disk starts as a copy of dos33blank.dsk (the original is never changed) and gets:
-  MBPLAY    the 6502 player, loaded at $8E00 (build it with src/mb_apple2/build.bat)
-  MPLAY     the & MPLAY command (build it with src/mb_basic/build.bat)
-  HELLO     an Applesoft menu that starts MBPLAY on the chosen song
+  MPLAY     the resident player: BRUN MPLAY installs the & MPLAY command (build it with
+            src/mb_basic/build.bat)
+  HELLO     an Applesoft menu that plays the chosen song with & MPLAY
   DEMO, PLAYMBF   example programs that use & MPLAY
   songs     ordinary DOS files named <TITLE>.MBF, so CATALOG lists them
 
-Each song is written straight into the disk image as a DOS 3.3 file (a catalog entry, track/
-sector lists and data sectors), because the sectors are placed on purpose: on every track in
-the order 0,14,13,...,8,7,6,...,1,15, which makes the drive deliver them with the least
-waiting when MBPLAY reads a file front to back (see mb_stream.s).
-A song of up to 8,448 bytes is a binary (B) file, so & MPLAY "NAME" can load it too. A bigger
-one is a text (T) file: DOS refuses to BLOAD it, and only MBPLAY plays it (load if it fits in
-28 KB, otherwise stream).
+With --base the songs and MPLAY go onto an existing disk instead (for example the KBASIC disk)
+and the example programs are left out except PLAYMBF, which that disk does not have.
+
+Each song is written straight into the disk image as a DOS 3.3 text (T) file, because the
+sectors are placed on purpose: on every track in the order 0,14,13,...,8,7,6,...,1,15, which
+makes the drive deliver them with the least waiting when MPLAY reads a file front to back
+(see mb_stream.s). A text file cannot be BLOADed by mistake, and a song can be as big as the disk.
 """
 import argparse
 import os
@@ -27,16 +27,11 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 BLANK_DISK = os.path.join(HERE, "dos33blank.dsk")   # blank DOS 3.3 disk, never modified
-PLAYER_BIN = os.path.join(ROOT, "src", "mb_apple2", "build", "MBPLAY.bin")
-MPLAY_BIN = os.path.join(ROOT, "src", "mb_basic", "build", "MPLAY.bin")
-DISK_DIR = os.path.join(ROOT, "src", "disk")     # all disk images made by this project go here
+MPLAY_BIN = os.path.join(HERE, "..", "mb_basic", "build", "MPLAY.bin")
+MPLAY_LBL = os.path.join(HERE, "..", "mb_basic", "build", "MPLAY.lbl")
+DISK_DIR = os.path.join(HERE, "..", "dist")      # all disk images made by this project go here
 ACX = os.environ.get("ACX", r"C:\bin\acx.exe")
 
-PLAYER_ADDR = 0x8E00
-MPLAY_ADDR = 0x8C00         # the Applesoft & MPLAY command
-MPLAY_SONG_ADDR = 0x6000    # where & MPLAY "FILE" loads an .MBF file; it holds 8,448 bytes
-MPLAY_FILE_MAX = 0x8100 - MPLAY_SONG_ADDR   # the byte after it is the player's variables
-LOAD_MAX_SECTORS = 7 * 16   # MBPLAY can load at most 7 slots of 16 sectors into RAM
 NAME_BYTES = 30
 TRACKS = 35
 VTOC_TRACK = 17
@@ -168,36 +163,39 @@ class Image:
         return nsec
 
 
+def mplay_address():
+    """Load address of MPLAY: the label `install` in the link map (the first byte of the file)."""
+    for line in open(MPLAY_LBL):
+        m = re.match(r"al ([0-9A-Fa-f]+) \.install$", line.strip())
+        if m:
+            return int(m.group(1), 16)
+    sys.exit(f"no label `install` in {MPLAY_LBL}")
+
+
 def menu_program(songs):
-    """HELLO. songs: list of (file name, sectors). The player is told the file name at $0300."""
+    """HELLO. songs: list of file names. BRUN MPLAY comes first: it needs the string space empty."""
     lines = [
-        f"10 HIMEM: {PLAYER_ADDR}",
-        "20 D$ = CHR$ (4)",
+        '10 PRINT CHR$ (4);"BRUN MPLAY"',
         '30 HOME : PRINT "MOCKINGBOARD MUSIC": PRINT',
         "40 RESTORE : READ N",
-        '50 FOR I = 1 TO N: READ F$,S: PRINT I;". ";F$: NEXT I',
+        '50 FOR I = 1 TO N: READ F$: PRINT I;". ";F$: NEXT I',
         '60 PRINT : INPUT "SONG (0 = QUIT) ";K',
         "70 IF K < 1 OR K > N THEN END",
-        "80 RESTORE : READ N: FOR I = 1 TO K: READ F$,S: NEXT I",
-        "90 M = 1",
-        f'100 IF S <= {LOAD_MAX_SECTORS} THEN PRINT "L)OAD OR S)TREAM? ";: GET A$: PRINT A$: M = (A$ = "S")',
-        '110 PRINT D$;"BLOAD MBPLAY"',
-        "115 FOR I = 1 TO LEN (F$): POKE 767 + I, ASC ( MID$ (F$,I,1)): NEXT I",
-        f"120 POKE 6,M: POKE 7, LEN (F$): POKE 9,0: CALL {PLAYER_ADDR}",
-        '130 PRINT : PRINT "PRESS A KEY": GET A$: GOTO 30',
+        "80 RESTORE : READ N: FOR I = 1 TO K: READ F$: NEXT I",
+        '90 PRINT "PLAYING ";F$;" (ANY KEY STOPS IT)"',
+        "100 & MPLAY F$",
+        '110 PRINT : PRINT "PRESS A KEY": GET A$: GOTO 30',
         "1000 DATA " + str(len(songs)),
     ]
-    for i, (name, sectors) in enumerate(songs):
-        lines.append(f'{1010 + i * 10} DATA "{name}",{sectors}')
+    for i, name in enumerate(songs):
+        lines.append(f'{1010 + i * 10} DATA "{name}"')
     return "\r".join(lines) + "\r"
 
 
 def demo_program():
     """DEMO: plays a tune written as text with & MPLAY."""
     lines = [
-        "10 HIMEM: 24576",
-        '20 PRINT CHR$ (4);"BLOAD MPLAY"',
-        f"30 CALL {MPLAY_ADDR}",
+        '10 PRINT CHR$ (4);"BRUN MPLAY"',
         '40 PRINT "PLAYING A TUNE (ANY KEY STOPS IT)"',
         '50 A$ = "!T120 O4 L4 CCGGAAG2 FFEEDDC2 GGFFEED2 GGFFEED2 CCGGAAG2 FFEEDDC2"',
         '60 A$ = A$ + " / O3 L2 CGFC GCFC GCFC GCFC"',
@@ -207,12 +205,10 @@ def demo_program():
 
 
 def playmbf_program():
-    """PLAYMBF: asks for the name of a small .MBF file on the disk and plays it with & MPLAY."""
+    """PLAYMBF: asks for the name of an .MBF file on the disk and plays it with & MPLAY."""
     lines = [
-        "10 HIMEM: 24576",
-        '20 PRINT CHR$ (4);"BLOAD MPLAY"',
-        f"30 CALL {MPLAY_ADDR}",
-        '40 PRINT "TYPE A NAME FROM CATALOG (A B FILE UP TO 8 KB)"',
+        '10 PRINT CHR$ (4);"BRUN MPLAY"',
+        '40 PRINT "TYPE A NAME FROM CATALOG"',
         '50 INPUT "MBF FILE NAME? ";F$',
         '60 PRINT "PLAYING ";F$;" (ANY KEY STOPS IT)"',
         "70 & MPLAY F$",
@@ -223,54 +219,52 @@ def playmbf_program():
 
 def main():
     parser = argparse.ArgumentParser(description="Build a Mockingboard player disk")
-    parser.add_argument("dsk", help="output .dsk file; a bare name is created in src/disk")
+    parser.add_argument("dsk", help="output .dsk file; a bare name is created in src/dist")
     parser.add_argument("songs", nargs="+", help=".MBF files, or folders containing them")
+    parser.add_argument("--base", help="start from this disk instead of a blank DOS 3.3 disk "
+                                       "(only MPLAY, PLAYMBF and the songs are added)")
     args = parser.parse_args()
 
     if not os.path.dirname(args.dsk):
         args.dsk = os.path.join(DISK_DIR, args.dsk)
-    for path, build in ((BLANK_DISK, None), (ACX, None), (PLAYER_BIN, "src\\mb_apple2\\build.bat"),
-                        (MPLAY_BIN, "src\\mb_basic\\build.bat")):
+    base = args.base or BLANK_DISK
+    for path, build in ((base, None), (ACX, None), (MPLAY_BIN, "src\\mb_basic\\build.bat")):
         if not os.path.exists(path):
             sys.exit(f"missing: {path}" + (f"  (run {build} first)" if build else ""))
 
-    # What goes on the disk: name, type and bytes of every song that is not too long for a file
+    # What goes on the disk: name and bytes of every song that a DOS file can hold
     used, songs = set(), []
     for path in collect(args.songs):
         data = open(path, "rb").read()
         name = dos_name(path, used)
-        if len(data) <= MPLAY_FILE_MAX:
-            payload = struct.pack("<HH", MPLAY_SONG_ADDR, len(data)) + data      # binary file header
-            songs.append((name, TYPE_BINARY, payload, path))
-        elif len(data) <= 0xFFFF:
-            songs.append((name, TYPE_TEXT, data, path))
+        if len(data) <= 0xFFFF:
+            songs.append((name, data, path))
         else:
             print(f"left out {os.path.basename(path)}: {len(data)} bytes, more than a DOS file can hold")
     if not songs:
         sys.exit("no songs")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.dsk)), exist_ok=True)
-    shutil.copyfile(BLANK_DISK, args.dsk)
-    menu = menu_program([(name, -(-len(payload) // 256)) for name, _, payload, _ in songs])
-    acx("-p", args.dsk, "MBPLAY", "B", hex(PLAYER_ADDR), stdin_path=PLAYER_BIN)
-    acx("-p", args.dsk, "MPLAY", "B", hex(MPLAY_ADDR), stdin_path=MPLAY_BIN)
-    acx("-bas", args.dsk, "HELLO", stdin_text=menu)
-    acx("-bas", args.dsk, "DEMO", stdin_text=demo_program())
+    shutil.copyfile(base, args.dsk)
+    acx("-p", args.dsk, "MPLAY", "B", hex(mplay_address()), stdin_path=MPLAY_BIN)
     acx("-bas", args.dsk, "PLAYMBF", stdin_text=playmbf_program())
+    if not args.base:
+        acx("-bas", args.dsk, "HELLO", stdin_text=menu_program([name for name, _, _ in songs]))
+        acx("-bas", args.dsk, "DEMO", stdin_text=demo_program())
 
     image = Image(open(args.dsk, "rb").read())
-    for name, ftype, payload, path in songs:
-        if image.add_file(name, ftype, payload) is None:
-            print(f"left out {os.path.basename(path)}: {len(payload)} bytes do not fit in the free sectors left")
+    placed = []
+    for name, data, path in songs:
+        if image.add_file(name, TYPE_TEXT, data) is None:
+            print(f"left out {os.path.basename(path)}: {len(data)} bytes do not fit in the free sectors left")
+        else:
+            placed.append((name, data))
     with open(args.dsk, "wb") as f:
         f.write(image.d)
 
     print(acx("-ll", args.dsk))
-    for number, (name, ftype, payload, path) in enumerate(songs, 1):
-        sectors = -(-len(payload) // 256)
-        mode = "load or stream" if sectors <= LOAD_MAX_SECTORS else "stream only"
-        kind = "also & MPLAY" if ftype == TYPE_BINARY else "MBPLAY only"
-        print(f"  {number:2d}. {name}  ({len(payload)} bytes, {sectors} sectors, {mode}, {kind})")
+    for number, (name, data) in enumerate(placed, 1):
+        print(f"  {number:2d}. {name}  ({len(data)} bytes, {-(-len(data) // 256)} sectors)")
 
 
 if __name__ == "__main__":

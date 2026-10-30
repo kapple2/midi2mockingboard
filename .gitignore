@@ -5,12 +5,18 @@ __pycache__/
 .pytest_cache/
 .venv/
 
-# cc65 build output (rebuilt by mb_apple2\build.bat and mb_basic\build.bat)
+# cc65 build output (rebuilt by mb_basic\build.bat): object files, libraries, maps, labels, listings, debug info.
+# The finished player goes to dist/ (dist/MPLAY.bin and dist/MPLAY.lbl are kept, see below).
 build/
 *.o
+*.obj
+*.a
+*.lib
 *.lst
 *.map
 *.lbl
+*.dbg
+*.d
 
 # Generated audio and converter output
 *.wav
@@ -20,10 +26,11 @@ mbf_out/
 mame/
 *.log
 
-# Disk images: keep the real disk (src/disk/mb.dsk), ignore any other .dsk
+# Disk images: keep the real disk (src/dist/mb.dsk), ignore any other .dsk
 *.dsk
-!disk/
-!disk/mb.dsk
+!dist/mb.dsk
+!dist/MPLAY.bin
+!dist/MPLAY.lbl
 !mb_disk/dos33blank.dsk
 *.dsk.bak
 
@@ -32,7 +39,10 @@ mame/
 .idea/
 *.swp
 Thumbs.db
+.DS_Store
 Desktop.ini
 
-# Standalone exe output (rebuild with mb_studio\build_exe.bat)
-dist/
+
+# Mac and Linux builds come from CI (or build_exe.sh); only the Windows exe is committed
+dist/MockingboardStudio.app/
+dist/MockingboardStudio-linux

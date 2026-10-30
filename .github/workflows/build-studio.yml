@@ -1,0 +1,45 @@
+name: Build Mockingboard Studio
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: MockingboardStudio-windows
+            path: dist/MockingboardStudio.exe
+          - os: macos-latest
+            artifact: MockingboardStudio-macos
+            path: dist/MockingboardStudio.app
+          - os: ubuntu-latest
+            artifact: MockingboardStudio-linux
+            path: dist/MockingboardStudio-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk libportaudio2
+      - name: macOS tkinter
+        if: runner.os == 'macOS'
+        run: brew install python-tk@3.12
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: mb_studio\build_exe.bat
+      - name: Build (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: sh mb_studio/build_exe.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}

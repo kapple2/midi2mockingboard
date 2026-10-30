@@ -29,7 +29,7 @@ WHOLE_TICKS = 60 * RATE * 4     # ticks in a whole note at 1 quarter note per mi
 BASE_PERIODS = [round(AY_CLOCK / (16.0 * 16.3516 * 2 ** (n / 12.0))) for n in range(12)]
 NOTE_SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 MAX_VOICES = 6
-MAX_BYTES = 0x1F00              # the Apple II compiles into $6000-$7FFF
+MAX_BYTES = 0x0F00              # the Apple II compiles into the 4 KB ring, $6900-$78FF, and stops at $7800
 MIXER_TONES = 0x38
 
 

@@ -32,7 +32,13 @@ try:
 except ImportError:                 # the window still works, with the Add buttons only
     HAVE_DND = False
 
-DEFAULT_OUT = os.path.join(os.path.dirname(sys.executable) if FROZEN else os.path.abspath(os.path.join(HERE, "..", "..")), "mbf_out")
+if FROZEN and sys.platform == "darwin":     # next to the exe would be inside the .app bundle
+    _OUT_BASE = os.path.join(os.path.expanduser("~"), "Documents")
+elif FROZEN:
+    _OUT_BASE = os.path.dirname(sys.executable)
+else:
+    _OUT_BASE = os.path.abspath(os.path.join(HERE, "..", ".."))
+DEFAULT_OUT = os.path.join(_OUT_BASE, "mbf_out")
 SAMPLE_RATE = win_player.SAMPLE_RATE
 
 
