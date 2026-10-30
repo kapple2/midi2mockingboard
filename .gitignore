@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# cc65 build output (rebuilt by mb_apple2\build.bat and mb_basic\build.bat)
+build/
+*.o
+*.lst
+*.map
+*.lbl
+
+# Generated audio and converter output
+*.wav
+mbf_out/
+
+# MAME state, logs and temporary disk copies from the tests
+mame/
+*.log
+
+# Disk images: keep the real disk (src/disk/mb.dsk), ignore any other .dsk
+*.dsk
+!disk/
+!disk/mb.dsk
+!mb_disk/dos33blank.dsk
+*.dsk.bak
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Standalone exe output (rebuild with mb_studio\build_exe.bat)
+dist/
