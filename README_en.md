@@ -19,6 +19,22 @@ converts MIDI into exactly that stream, stores it in a small file format (`.MBF`
 - **Made to coexist with the Korean (Hangul) projects:** `MPLAY` keeps to one fixed block of memory (`$6900-$89FF`)
   and chains the `&` vector, so it runs beside the K-HANGEUL driver and KBASIC. It also works on a plain DOS 3.3 disk.
 
+## Quick run
+
+The Windows binaries are already built and sit in `src\dist\`. You can use them right away, with no Python, cc65 or
+anything else installed.
+
+| File | What it is | How to use it right away |
+| --- | --- | --- |
+| `MockingboardStudio.exe` | A Windows program: a window that converts MIDI files for the Mockingboard and plays the result on the PC | Double-click it. On the **Convert** tab drop `.mid` files on the list and press Convert; the `.MBF` files go to `mbf_out` next to the exe by default. On the **Play** tab pick an `.MBF` and press Play |
+| `mb.dsk` | A bootable Apple II DOS 3.3 disk with `MPLAY`, five songs, a menu and demo programs | Mount it as drive 1 in AppleWin or MAME (`apple2p`), with a Mockingboard in a slot (`-sl5 phasor` in MAME), and boot. Pick a song number in the menu; any key stops it. On a real Apple II+/IIe (48K), transfer the image to a floppy and boot it |
+| `MPLAY.bin` | The raw binary of the resident player (the program that adds the `& MPLAY` command), load address `$7D00` | A part for your own DOS 3.3 disk: `cmd /c "C:\bin\acx.exe -p disk.dsk MPLAY B 0x7D00 < MPLAY.bin"`, then `BRUN MPLAY`, then `& MPLAY "SONGNAME"` in BASIC |
+| `MPLAY.lbl` | The linker's label file for `MPLAY.bin` (a list of the address of each symbol) | Not used on its own. Look at it only when you need an address inside the player (see "Rebuild everything" below) |
+
+A good first try: convert one of the sample `.mid` files in `midi\` with the Studio and listen to it, then boot `mb.dsk` and
+hear the same song on the Apple II. There is no macOS or Linux Studio among these binaries; build it on that OS or use the
+GitHub Actions workflow (see below).
+
 ## What you get
 
 | Product | Where | What it is |
