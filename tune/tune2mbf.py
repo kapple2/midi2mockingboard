@@ -29,7 +29,9 @@ WHOLE_TICKS = 60 * RATE * 4     # ticks in a whole note at 1 quarter note per mi
 BASE_PERIODS = [round(AY_CLOCK / (16.0 * 16.3516 * 2 ** (n / 12.0))) for n in range(12)]
 NOTE_SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 MAX_VOICES = 6
-MAX_BYTES = 0x0F00              # the Apple II compiles into the 4 KB ring, $6900-$78FF, and stops at $7800
+DEFAULT_SLOTS = 4               # the Apple II compiles into its ring: 4 slots of 512 bytes after BRUN MPLAY
+SLOT_BYTES = 512
+MAX_BYTES = (DEFAULT_SLOTS * SLOT_BYTES // 256 - 1) * 256   # it stops starting frames on the ring's last page: 1,792
 MIXER_TONES = 0x38
 
 
@@ -151,14 +153,15 @@ def keyframe():
     return writes
 
 
-def compile_tune(text):
-    """Return the .MBF bytes for a tune text."""
+def compile_tune(text, max_bytes=MAX_BYTES):
+    """Return the .MBF bytes for a tune text. max_bytes is the size the Apple II has room for: with a ring of
+    n slots (& MPLAY n) that is (2 * n - 1) * 256."""
     parts = [p for p in text.upper().split("/")][:MAX_VOICES]
     voices = [Voice(p, i) for i, p in enumerate(parts)]
     out = bytearray(struct.pack("<4sHBB", b"MBF1", RATE, 0, 0))
     first = True
     while True:
-        if len(out) >= MAX_BYTES:       # too long for the Apple II buffer: silence everything and stop
+        if len(out) >= max_bytes:       # too long for the Apple II buffer: silence everything and stop
             out.append(6)
             for chip in range(2):
                 for reg in (8, 9, 10):
@@ -183,13 +186,16 @@ def main():
     parser.add_argument("tune", nargs="+", help="the tune text, or a text file holding it with -f")
     parser.add_argument("-f", "--file", action="store_true", help="the argument is a text file with the tune")
     parser.add_argument("-o", "--out", default="tune.MBF", help="output .MBF file (default tune.MBF)")
+    parser.add_argument("--ring-slots", type=int, default=DEFAULT_SLOTS,
+                        help="the Apple II ring size (& MPLAY n) the tune must fit in, in slots of 512 bytes "
+                             "(default 4: a tune up to 1,792 bytes; longer ones are cut off and silenced like on the Apple II)")
     args = parser.parse_args()
 
     text = " ".join(args.tune)
     if args.file:
         with open(text, encoding="utf-8") as f:
             text = " ".join(f.read().split())
-    data = compile_tune(text)
+    data = compile_tune(text, (args.ring_slots * SLOT_BYTES // 256 - 1) * 256)
     with open(args.out, "wb") as f:
         f.write(data)
     print(f"{args.out}: {len(data)} bytes")

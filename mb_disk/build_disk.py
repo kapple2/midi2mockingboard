@@ -217,6 +217,28 @@ def playmbf_program():
     return "\r".join(lines) + "\r"
 
 
+def catalog_names(dsk):
+    """The file names in the catalog of a DOS 3.3 image, in catalog order (a name may appear twice)."""
+    names = []
+    for line in acx("-ll", dsk).splitlines():
+        m = re.match(r"^\s*[A-Z]\s+(.+?)\s+[\d,]+\s+\d{3}\s+T\d+ S\d+", line)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def remove_existing(dsk, names):
+    """Delete every catalog entry called one of `names`: a disk that already holds an older MPLAY (or the
+    same songs) would otherwise end up with two files of one name, and DOS runs the first one."""
+    wanted = set(names)
+    for _ in range(100):
+        old = [n for n in catalog_names(dsk) if n in wanted]
+        if not old:
+            return
+        acx("-d", dsk, old[0])
+    sys.exit("could not clear the old files from " + dsk)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build a Mockingboard player disk")
     parser.add_argument("dsk", help="output .dsk file; a bare name is created in src/dist")
@@ -246,6 +268,8 @@ def main():
 
     os.makedirs(os.path.dirname(os.path.abspath(args.dsk)), exist_ok=True)
     shutil.copyfile(base, args.dsk)
+    if args.base:       # replace older copies of our files that the base disk may already hold
+        remove_existing(args.dsk, ["MPLAY", "PLAYMBF"] + [name for name, _, _ in songs])
     acx("-p", args.dsk, "MPLAY", "B", hex(mplay_address()), stdin_path=MPLAY_BIN)
     acx("-bas", args.dsk, "PLAYMBF", stdin_text=playmbf_program())
     if not args.base:

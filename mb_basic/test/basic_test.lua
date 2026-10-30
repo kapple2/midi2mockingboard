@@ -5,7 +5,8 @@
 --   MB_LINES   the lines to type, separated by "|"; the last one must print MB_DONE when the music is over
 --   MB_DONE    text that appears on the screen when the last line is finished (default FINISHED)
 --   MB_SLOT    slot holding the Phasor card (default 5)
---   MB_DUMP    if set, write the player's ring ($6900-$793F) to this file when the first note is played
+--   MB_DUMP    if set, write the player's ring (from page ring_hi, which MB_LBL gives, up to $793F with the tail copy) to this
+--              file when the first note is played
 --   MB_LBL     the linker's label file (MPLAY.lbl); used to find the driver's mb_paused flag
 --   MB_SEND    keys to press, "<seconds after the first note>:<key>" separated by commas, key = a character or
 --              ESC; the log gets "#SFX <time>" for the first key that is not ESC and "#ESC <time>" for ESC
@@ -36,12 +37,14 @@ local m   = manager.machine
 local mem = m.devices[":maincpu"].spaces["program"]
 local base = 0xC000 + slot * 0x100
 
--- address of the driver's mb_paused flag, from the ld65 label file ("al 007B53 .mb_paused")
-local paused_addr
+-- addresses of the driver's mb_paused flag and the streamer's ring_hi, from the ld65 label file ("al 007B53 .mb_paused")
+local paused_addr, ring_hi_addr
 if lbl_path then
   for line in io.lines(lbl_path) do
     local addr = line:match("^al (%x+) %.mb_paused$")
     if addr then paused_addr = tonumber(addr, 16) end
+    addr = line:match("^al (%x+) %.ring_hi$")
+    if addr then ring_hi_addr = tonumber(addr, 16) end
   end
 end
 
@@ -73,7 +76,9 @@ local hangul_sum
 
 local function dump_ram()
   local f = assert(io.open(dump_path, "wb"))
-  for a = 0x6900, 0x793F do f:write(string.char(mem:read_u8(a))) end
+  local first = ring_hi_addr and mem:read_u8(ring_hi_addr) * 256 or 0x7100
+  notes[#notes + 1] = string.format("#RINGHI %02X at %04X", first / 256, ring_hi_addr or 0)
+  for a = first, 0x793F do f:write(string.char(mem:read_u8(a))) end
   f:close()
 end
 

@@ -16,7 +16,7 @@ converts MIDI into exactly that stream, stores it in a small file format (`.MBF`
   player, `MPLAY`, that adds the Applesoft command `& MPLAY "NAME"`. It streams songs of any size straight from a
   DOS 3.3 disk, so a song can be as big as the disk. It also plays tunes written inside a BASIC program, loops, and
   can make a sound effect on a key press.
-- **Made to coexist with the Korean (Hangul) projects:** `MPLAY` keeps to one fixed block of memory (`$6900-$89FF`)
+- **Made to coexist with the Korean (Hangul) projects:** `MPLAY` keeps to one fixed block of memory (`$7100-$89FF` by default; `& MPLAY n` sets the size of the song ring)
   and chains the `&` vector, so it runs beside the K-HANGEUL driver and KBASIC. It also works on a plain DOS 3.3 disk.
 
 ## Quick run

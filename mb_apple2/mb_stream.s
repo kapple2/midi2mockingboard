@@ -10,12 +10,13 @@
 ; read starts about two sector times after the last one ended and a track of 16 sectors
 ; takes about two disk revolutions instead of sixteen.
 ;
-; The song is always streamed: STREAM_OPEN fills a ring of RING_SLOTS slots (mb_layout.inc: 4 slots of
-; 4 sectors) and STREAM_SERVICE keeps it filled from the main loop. A song that fits the ring is
-; read once and never touched again. A disk read stops the CPU, so each refill pauses the music
-; (MB_PAUSE / MB_RESUME) for as long as the sectors take.
-; The ring needs a 64-byte copy of the first slot's start right behind it (TAIL_HI), so that a
-; frame running over the end of the last slot reads on into the start of the first one.
+; The song is always streamed: STREAM_OPEN fills a ring of ring_slots slots of SLOT_PAGES sectors each
+; (mb_layout.inc; the caller sets ring_slots and ring_hi: 4 slots after BRUN MPLAY, & MPLAY n changes that) and STREAM_SERVICE keeps it
+; filled from the main loop. A song that fits the ring is read once and never touched again. A disk read stops
+; the CPU, so each refill pauses the music (MB_PAUSE / MB_RESUME) for as long as the sectors take.
+; The ring ends at TAIL_HI and starts at page ring_hi (it grows downwards). It needs a 64-byte copy of the first
+; slot's start right behind it (at TAIL_HI), so that a frame running over the end of the last slot reads on into
+; the start of the first one.
 ; Needs DOS 3.3 in memory (RWTS at $03D9; slot, drive and device table are copied from
 ; DOS's own IOB, found with LOCRPL at $03E3).
 
@@ -23,7 +24,7 @@
 
         .import MB_POS, MB_PAUSE, MB_RESUME, MB_TICK, MB_PLAY, MB_RING
         .export FILE_OPEN, STREAM_OPEN, STREAM_SERVICE, STREAM_STOP, STREAM_RESTART
-        .export f_skip
+        .export f_skip, ring_hi, ring_slots, SET_RING
 
 RWTS            = $03D9
 LOCRPL          = $03E3         ; DOS 3.3: returns the address of its own IOB in Y (low) / A (high)
@@ -71,6 +72,8 @@ tmp:            .res 1
 f_tl:           .res 1          ; the file's first track/sector list
 f_ts:           .res 1
 f_skip:         .res 1          ; bytes of header in front of the song data (0 or 4)
+ring_hi:        .res 1          ; page where the ring starts (it ends at TAIL_HI); set by the caller
+ring_slots:     .res 1          ; number of slots in the ring
 ts_j:           .res 1          ; next pair to use in the list now in secbuf
 eof:            .res 1          ; 1 when the file has no more sectors
 nsec:           .res 1          ; sectors read into the slot being filled
@@ -169,7 +172,7 @@ FILE_OPEN:
 @nf:    sec
 @ret:   rts
 
-; Fill the ring (RING_SLOTS slots) from the open file. C set = disk error.
+; Fill the ring (ring_slots slots) from the open file. C set = disk error.
 ; The drive keeps spinning afterwards; call STREAM_STOP when the song is over.
 STREAM_OPEN:
         jsr     rewind
@@ -193,14 +196,21 @@ STREAM_RESTART:
         jsr     STREAM_OPEN
         bcs     @ret
         lda     f_skip
-        ldx     #RING_HI
+        ldx     ring_hi
         jsr     MB_PLAY
         bcs     @ret
-        lda     #TAIL_HI
-        ldx     #RING_PAGES
-        jsr     MB_RING
+        jsr     SET_RING
         clc
 @ret:   rts
+
+; Tell the driver where the ring ends and how long it is (after MB_PLAY).
+SET_RING:
+        lda     #TAIL_HI
+        sec
+        sbc     ring_hi
+        tax                     ; X = ring length in pages
+        lda     #TAIL_HI
+        jmp     MB_RING
 
 ; Call from the main loop. When the music has moved on from a slot, refill it with the
 ; next SLOT_PAGES sectors. A refill is not urgent (the ring holds several slots ahead), so first the
@@ -214,10 +224,10 @@ STREAM_SERVICE:
         jsr     MB_POS
         cmp     #TAIL_HI
         bcc     @inring
-        lda     #RING_HI        ; reading the tail copy: the slot is slot 0
+        lda     ring_hi         ; reading the tail copy: the slot is slot 0
 @inring:
         sec
-        sbc     #RING_HI
+        sbc     ring_hi
         .repeat SLOT_SHIFT
         lsr
         .endrepeat              ; A = slot the music is in
@@ -255,21 +265,23 @@ fill_one:
         asl
         .endrepeat              ; slot * SLOT_PAGES
         clc
-        adc     #RING_HI
+        adc     ring_hi
         sta     dest_hi
         jsr     read_slot
         bcs     @ret
         lda     fill_slot
         bne     @notfirst
-        ldy     #TAIL_BYTES - 1 ; keep the tail copy of slot 0's start current
-@t:     lda     RING_HI * 256,y
+        lda     ring_hi         ; keep the tail copy of slot 0's start current (the high byte of the
+        sta     @t+2            ; source address is patched in: the code is in RAM)
+        ldy     #TAIL_BYTES - 1
+@t:     lda     DEFAULT_RING_HI * 256,y
         sta     TAIL_HI * 256,y
         dey
         bpl     @t
 @notfirst:
         inc     fill_slot
         lda     fill_slot
-        cmp     #RING_SLOTS
+        cmp     ring_slots
         bcc     @ok
         lda     #0
         sta     fill_slot

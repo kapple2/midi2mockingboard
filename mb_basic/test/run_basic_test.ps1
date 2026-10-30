@@ -11,6 +11,7 @@
 #   -Loop     ESC at -SfxAt seconds; use & MPLAY "..",1 (the song must start again by itself)
 #   -NoCard   no Mockingboard in the machine: & MPLAY must raise I/O ERROR
 #   -ExpectBad  the file is not an MBF: & MPLAY must raise FILE TYPE MISMATCH and write no notes
+#   -ExpectError <text>  the last statement must raise this error (the text is on the screen) and write no notes
 #   -Menu     the disk's own HELLO menu runs at boot; -Lines answer it
 #   -Hangul   the disk is the K-HANGEUL / KBASIC one (hi-res text screen): the test types the lines blind and
 #             waits for POKE 800,66 instead of the word FINISHED, and checks that the Hangul font, KBASIC and
@@ -27,6 +28,7 @@ param(
     [double]$SfxAt = 3,
     [switch]$NoCard,
     [switch]$ExpectBad,
+    [string]$ExpectError,
     [switch]$Menu,
     [switch]$NoInstall,
     [switch]$Hangul
@@ -50,7 +52,7 @@ Remove-Item $dump -ErrorAction SilentlyContinue
 $done = if ($Hangul) { 'POKE 800,66' } else { 'PRINT "FIN";"ISHED"' }
 if (-not $Lines) {
     # an error ends the rest of a typed line, so after a statement that must fail the finish goes on its own line
-    $Lines = if ($NoCard -or $ExpectBad) { "$Play|$done" } else { "$Play`: $done" }
+    $Lines = if ($NoCard -or $ExpectBad -or $ExpectError) { "$Play|$done" } else { "$Play`: $done" }
 }
 foreach ($v in 'MB_HANGUL', 'MB_MENU', 'MB_SEND') { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
 if ($Hangul) { $env:MB_HANGUL = '1' }
@@ -79,7 +81,7 @@ if (-not (Test-Path $log)) { throw 'MAME exited without writing a log' }
 $check = @("$here\check_log.py", $log, $Expect)
 if ($Loop) { $check = @("$here\check_loop.py", $log, $Expect) }
 elseif ($Keys) { $check += '--keys' }
-if ($NoCard) { $check += '--nocard' } elseif ($ExpectBad) { $check += '--bad' }
+if ($NoCard) { $check += '--nocard' } elseif ($ExpectBad) { $check += '--bad' } elseif ($ExpectError) { $check += @('--error', $ExpectError) }
 if ($Stream) { $check += '--stream' }
 if ($Hangul) { $check += '--hangul' }
 if (Test-Path $dump) { $check += @('--dump', $dump) }

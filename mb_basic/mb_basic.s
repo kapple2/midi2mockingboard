@@ -1,10 +1,13 @@
 ; mb_basic.s - the Applesoft command  & MPLAY ...  (ca65, plain 6502)
 ;
 ; BRUN MPLAY installs it (once, as early as you can: before the program makes any string).
-; The file is loaded at $7D00; the ring and the variables sit below it (mb_layout.inc), so
-; the whole player takes $6900-$89FF and nothing else: it works on a plain DOS 3.3 disk and
-; on the K-HANGEUL / KBASIC disk (see ADDON_MEMORY.md).
+; The file is loaded at $7D00; the variables and the song ring sit below it (mb_layout.inc), so
+; the whole player takes the ring (2 KB after BRUN) up to $89FF and nothing else: it works on a plain
+; DOS 3.3 disk and on the K-HANGEUL / KBASIC disk (see ADDON_MEMORY.md).
 ;
+;     & MPLAY n              set the ring to n slots of 512 bytes (2-28; 4 after BRUN MPLAY). Only before the
+;                            program has made a string: it moves HIMEM. A bigger ring pauses the music less
+;                            often while a long song streams, a smaller one leaves BASIC more memory.
 ;     & MPLAY "NAME"         play the .MBF file NAME from the disk catalog (streamed)
 ;     & MPLAY "NAME",1       the same, and start it again when it ends (a key stops it)
 ;     & MPLAY "NAME",2       a key other than ESC or Q plays a short blip over the music instead of
@@ -20,13 +23,16 @@
 ;
 ; Zero page: $06-$09 and $EB-$EF (free in Applesoft), $FA-$FE (the driver, only while
 ; playing), $5E/$5F (Applesoft's string result). Page 3: only the & vector at $03F5.
+; Errors for n: ILLEGAL QUANTITY (n below 2 or above 28), OUT OF MEMORY (a string exists already, the
+; program is in the way, or HIMEM is not where the ring started).
 
         .setcpu "6502"
 
         .import MB_INIT, MB_PLAY, MB_POLL, MB_STOP, MB_RING, MB_SFX
         .import FILE_OPEN, STREAM_OPEN, STREAM_SERVICE, STREAM_STOP, STREAM_RESTART, f_skip
         .import TUNE_COMPILE
-        .import __RING_RUN__, __SECBUF_RUN__, __BSS_RUN__
+        .import __TAIL_RUN__, __SECBUF_RUN__, __BSS_RUN__
+        .import ring_hi, ring_slots, SET_RING
 
         .include "mb_layout.inc"
 
@@ -35,15 +41,18 @@ CHRGET          = $00B1         ; next program character (skips spaces)
 CHRGOT          = $00B7         ; the current one
 TXTPTR          = $00B8
 INDEX           = $005E         ; FRESTR leaves the string address here
+VALTYP          = $0011         ; $FF: the expression was a string, 0: a number
 FRETOP          = $006F
 HIMEMLO         = $0073
 STREND          = $006D
 FRMEVL          = $DD7B         ; evaluate the expression at TXTPTR
 FRESTR          = $E5FD         ; string result: A = length, address in INDEX
 GETBYT          = $E6F8         ; evaluate a byte expression into X
+CONINT          = $E6FB         ; FAC to a byte in X (ILLEGAL QUANTITY if not 0-255)
 SYNCHR          = $DEC0
 ERROR           = $D412
 OUTOFMEM        = $4D           ; error offset of ?OUT OF MEMORY
+ILLQTY          = $35           ; error offset of ?ILLEGAL QUANTITY
 AMPER           = $03F5         ; & jumps here: JMP routine
 KEYBD           = $C000
 STROBE          = $C010
@@ -61,9 +70,10 @@ MAX_NAME        = 30            ; DOS 3.3 file names are at most 30 characters
 
 SP              = $ED           ; the string argument ($ED/$EE)
 
-        .assert __RING_RUN__ = RING_HI * 256, error, "ring is not where mb_layout.inc says"
+        .assert __TAIL_RUN__ = TAIL_HI * 256, error, "ring tail is not where mb_layout.inc says"
         .assert __SECBUF_RUN__ = TAIL_HI * 256 + $100, error, "sector buffer is not where mb_layout.inc says"
         .assert __BSS_RUN__ = TAIL_HI * 256 + $200, error, "variables are not where mb_layout.inc says"
+        .assert MAX_SLOTS * SLOT_PAGES <= TAIL_HI - $41, error, "the largest ring would reach down into BASIC's program"
 
         .segment "CODE"
 
@@ -81,23 +91,12 @@ install:
         lda     AMPER+2
         cmp     #>amper
         beq     @ret
-@new:   lda     FRETOP          ; no strings yet (string top = HIMEM), program and variables
-        cmp     HIMEMLO         ; end below the ring: else the block would land on them
-        bne     @nomem
-        lda     FRETOP+1
-        cmp     HIMEMLO+1
-        bne     @nomem
-        cmp     #>BLOCK_END     ; HIMEM must not be below the block (KBASIC's $8A00 or higher)
-        bcc     @nomem
-        lda     STREND+1
-        cmp     #RING_HI
-        bcs     @nomem
-        lda     #<BLOCK_START   ; protect the block: HIMEM and the string top move down
-        sta     HIMEMLO
-        sta     FRETOP
-        lda     #>BLOCK_START
-        sta     HIMEMLO+1
-        sta     FRETOP+1
+@new:   lda     HIMEMLO+1       ; HIMEM must not be below the block (KBASIC's $8A00 or higher)
+        cmp     #>BLOCK_END
+        bcc     nomem
+        lda     #DEFAULT_SLOTS  ; protect the block: HIMEM and the string top move down to the ring's start,
+        jsr     setring         ; if there are no strings yet and the program ends below it
+        bcs     nomem
         ldx     #2
 @old:   lda     AMPER,x         ; keep the previous & routine to chain to
         sta     old,x
@@ -110,7 +109,57 @@ install:
         lda     #>amper
         sta     AMPER+2
 @ret:   rts
-@nomem: ldx     #OUTOFMEM
+nomem:  ldx     #OUTOFMEM
+        jmp     ERROR
+
+; A = number of slots for the ring (MIN_SLOTS to MAX_SLOTS, not checked here). Moves HIMEM and the string top to
+; the start of such a ring and sets ring_hi / ring_slots, if no string exists yet (string top = HIMEM) and the
+; program and its variables end below the ring. C set = no, nothing was changed.
+setring:
+        tay                     ; Y = slots
+        .repeat SLOT_SHIFT
+        asl
+        .endrepeat
+        eor     #$FF            ; the ring starts at page TAIL_HI - slots * SLOT_PAGES
+        sec
+        adc     #TAIL_HI
+        tax
+        lda     FRETOP
+        cmp     HIMEMLO
+        bne     @no
+        lda     FRETOP+1
+        cmp     HIMEMLO+1
+        bne     @no
+        cpx     STREND+1        ; the ring must start above the page where the variables end
+        beq     @no
+        bcc     @no
+        lda     #0
+        sta     HIMEMLO
+        sta     FRETOP
+        stx     HIMEMLO+1
+        stx     FRETOP+1
+        stx     ring_hi
+        sty     ring_slots
+        clc
+        rts
+@no:    sec
+        rts
+
+; & MPLAY n : the number is in FAC. Only valid while HIMEM is where our ring starts.
+ringcmd:
+        jsr     CONINT          ; X = n (a value outside 0-255 is ILLEGAL QUANTITY)
+        txa
+        cmp     #MIN_SLOTS
+        bcc     @range
+        cmp     #MAX_SLOTS+1
+        bcs     @range
+        ldx     HIMEMLO+1       ; somebody else moved HIMEM (HIMEM: in the program): leave it alone
+        cpx     ring_hi
+        bne     nomem
+        jsr     setring
+        bcs     nomem
+        rts
+@range: ldx     #ILLQTY
         jmp     ERROR
 
 ; Stop the music and the drive, then raise DOS error A. DOS's error routine expects to run
@@ -145,8 +194,10 @@ amper:
         jsr     CHRGET
         cpx     #5
         bcc     @word
-        jsr     FRMEVL          ; TXTPTR sits on the first character of the string expression
-        jsr     FRESTR          ; (a literal, or a variable such as A$)
+        jsr     FRMEVL          ; TXTPTR sits on the first character of the expression
+        bit     VALTYP
+        bpl     ringcmd         ; a number: the ring size
+        jsr     FRESTR         ; a string: a literal, or a variable such as A$
         sta     slen
         lda     INDEX
         sta     SP
@@ -184,18 +235,14 @@ amper:
         dey
         jsr     TUNE_COMPILE
         lda     #0
-        ldx     #RING_HI
+        ldx     ring_hi
         jsr     MB_PLAY
-        bcs     @bad
-        lda     #0              ; a compiled tune is not read from the disk
-        sta     disk
-        beq     run
+        bcs     badmbf
+        jmp     run             ; (disk is 0: a compiled tune is not read from the disk)
 @done:  rts
 @nocard:
         lda     #E_IO           ; DOS 3.3 has no "no device" message
         jmp     raise
-@bad:   lda     #E_TYPE
-        jmp     fail
 @notmine:
         lda     savetp          ; not ours: give the line back untouched and pass it on
         sta     TXTPTR
@@ -226,22 +273,18 @@ file:   ldy     #0
         stx     disk            ; the drive and the IOB copy are in use from here on
         bcs     @nf
         jsr     STREAM_OPEN
-        bcs     @io
+        bcs     ioerr
         lda     f_skip          ; a binary file has a 4-byte header in front of the song
-        ldx     #RING_HI
+        ldx     ring_hi
         jsr     MB_PLAY
-        bcs     @bad
-        lda     #TAIL_HI
-        ldx     #RING_PAGES
-        jsr     MB_RING
-        lda     #1
-        sta     disk
-        bne     run
+        bcs     badmbf
+        jsr     SET_RING
+        jmp     run
 @nf:    lda     #E_FNF
         jmp     fail
-@io:    lda     #E_IO
+ioerr:  lda     #E_IO
         jmp     fail
-@bad:   lda     #E_TYPE
+badmbf: lda     #E_TYPE
         jmp     fail
 
 ; Play until the song ends or a key is pressed
@@ -251,7 +294,7 @@ run:    bit     STROBE          ; forget any key pressed before
         lda     disk
         beq     @keys
         jsr     STREAM_SERVICE
-        bcs     @ioerr
+        bcs     ioerr
 @keys:  lda     KEYBD
         bpl     @poll
         bit     STROBE
@@ -277,9 +320,8 @@ run:    bit     STROBE          ; forget any key pressed before
         and     #F_LOOP
         beq     @stop
         jsr     STREAM_RESTART
-        bcs     @ioerr
+        bcs     ioerr
         jmp     @poll
-@ioerr: lda     #E_IO
 
 
         .segment "RODATA"
@@ -295,9 +337,8 @@ sfx_blip:
         .byte $FF
 dosbytes:       .byte $8D,$5C,$AA,$20,$E6,$BF,$AD     ; STA $AA5C / JSR $BFE6 / LDA $AAB6
 
-; The ring and its tail copy: just room, filled in at run time by mb_stream.s
-        .segment "RING"
-ring:           .res RING_PAGES * 256
+; The ring itself is not part of the file: it lies below this, in memory that BRUN MPLAY takes from BASIC,
+; and mb_stream.s fills it at run time. Behind it comes its tail copy:
         .segment "TAIL"
 tail:           .res TAIL_BYTES
 

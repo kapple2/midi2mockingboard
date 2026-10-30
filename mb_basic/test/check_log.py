@@ -2,7 +2,7 @@
 """Check an AY write log from basic_test.lua against the .MBF file that was played.
 
 usage: check_log.py <log> <mbf> [--keys] [--stream] [--dump <ram dump>] [--hangul]
-                               [--nocard | --bad]
+                               [--nocard | --bad | --error <text>]
 
 Without --keys the whole song must match: the logged writes after the driver's
 startup silence must equal the MBF's writes, in order.  With --keys the sound
@@ -12,8 +12,8 @@ match, apart from chip 1 channels B and C while the effect owns them.
 --stream: the song was streamed from disk.  Each refill pauses the music; the
 driver tags the silence and volume-restore writes around it as "paused".  Those
 are checked separately, the gaps are measured, and the music must still match.
---dump: the ring ($6900-$793F) as the player left it at the start of the song; it must
-equal the first 4 KB of the .MBF file (checks the disk reads).
+--dump: the ring (from its start page up to the tail copy at $7900-$793F) as the player left it at the start of
+the song; it must equal the first bytes of the .MBF file, as many as the ring holds (checks the disk reads).
 --hangul: the K-HANGEUL / KBASIC disk: the Hangul font, KBASIC and the CHRGET patch must be
 the same at the end as at the first note (basic_test.lua writes "#HANGUL same").
 """
@@ -25,7 +25,7 @@ SFX_ON_CHIP1 = {2, 3, 4, 5, 9, 10}
 SFX_BLIP = [(1, 2, 0xA0), (1, 3, 0x00), (1, 9, 0x0F), (1, 9, 0x0C), (1, 9, 0x09),
             (1, 9, 0x06), (1, 9, 0x03), (1, 9, 0x00)]
 MAX_GAP = 1.0           # seconds: the longest pause for one track refill that we accept
-RING_BYTES = 4 * 1024      # the ring holds four 1 KB slots
+TAIL_BYTES = 64            # the dump ends with the 64-byte tail copy of the ring's start
 
 
 def load_mbf(path):
@@ -77,6 +77,15 @@ def main():
     problems = []
     text = "\n".join(screen)
 
+    if "--error" in sys.argv:
+        want = arg("--error")
+        print("screen:", [row.strip() for row in screen if row.strip()][-4:])
+        if want not in text:
+            sys.exit(f"FAIL: the screen does not show {want}")
+        if any(w[2] < 8 for w in writes):
+            sys.exit("FAIL: the player wrote tone/mixer registers after the error")
+        print("PASS")
+        return
     if "--bad" in sys.argv:
         print("screen:", [row.strip() for row in screen if row.strip()][-4:])
         if "FILE TYPE MISMATCH" not in text:
@@ -103,7 +112,7 @@ def main():
 
     if arg("--dump"):
         ram = open(arg("--dump"), "rb").read()
-        n = min(len(raw), RING_BYTES)
+        n = min(len(raw), len(ram) - TAIL_BYTES)      # the ring holds len(ram) - 64 bytes
         if ram[:n] == raw[:n]:
             print(f"ring at song start matches the file ({n} bytes)")
         else:

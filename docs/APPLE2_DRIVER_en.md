@@ -27,7 +27,9 @@ first thing), and everything else is a BASIC program that calls it:
 ```
 
 While a song plays, any key stops it. `& MPLAY "NAME",1` starts it again when it ends, `,2` turns the keys into
-a sound effect (ESC or Q stop). The command is described in `TUNE_FORMAT_en.md`; the memory it takes, and what a
+a sound effect (ESC or Q stop). `& MPLAY 8` (a number) sets the size of the ring that the song streams through, in
+slots of 512 bytes: 4 after `BRUN MPLAY`, 2 to 28 allowed; a bigger ring pauses the music less often, a smaller one
+leaves BASIC more memory. The commands are described in `TUNE_FORMAT_en.md`; the memory they take, and what a
 further `&` command has to avoid on the Hangul disk, in `ADDON_MEMORY.md`.
 
 ## Using `MPLAY` from another project's disk
@@ -35,11 +37,12 @@ further `&` command has to avoid on the Hangul disk, in `ADDON_MEMORY.md`.
 `src\mb_basic\build.bat` copies the finished player to `src\dist\MPLAY.bin` (and its label file `MPLAY.lbl`), so another
 project can take it from there without building anything:
 
-- `MPLAY.bin` is a raw binary, 3,268 bytes, to be loaded at **`$7D00`**. Put it on the DOS 3.3 disk as a **B** file
+- `MPLAY.bin` is a raw binary, 3,328 bytes, to be loaded at **`$7D00`**. Put it on the DOS 3.3 disk as a **B** file
   named `MPLAY` with that address, e.g. `cmd /c "C:\bin\acx.exe -p disk.dsk MPLAY B 0x7D00 < MPLAY.bin"`.
 - `BRUN MPLAY` runs from `$7D00` (the installer is the first byte, `install` in `MPLAY.lbl` is `$7D00`). It lowers `HIMEM`
-  to `$6900` and installs `& MPLAY`; everything it uses is in `$6900-$89FF` (see `ADDON_MEMORY.md` for what that means beside
-  K-HANGEUL, KBASIC and the other `&` commands, and for the install order).
+  to `$7100` (a ring of 2 KB) and installs `& MPLAY`; everything it uses is in `$7100-$89FF`, and `& MPLAY n` moves the ring's
+  start further down (see `ADDON_MEMORY.md` for what that means beside K-HANGEUL, KBASIC and the other `&` commands, and for
+  the install order).
 - Songs go on the same disk as DOS **T** files whose sectors are in streaming order; `src\mb_disk\build_disk.py --base other.dsk`
   does this, and its code is the reference.
 - Rebuild `MPLAY.bin` (and so `dist\`) whenever `mb_basic`, `mb_apple2` or `mb_layout.inc` change.
@@ -50,14 +53,15 @@ Each song is an ordinary DOS 3.3 text (T) file (`CATALOG` lists it, and `BLOAD` 
 writes it straight into the disk image, because it places the sectors on purpose: on each track in the order
 0,14,13,...,8,7,6,...,1,15, which the drive delivers (physical sectors 0,2,...,14,1,3,...,15) with the least
 waiting. `MPLAY` finds the file by name in the catalog, then reads the file's track/sector list and its sectors
-through DOS's own `RWTS` routine, front to back, a slot of 4 sectors at a time, so a song can be as big as the
+through DOS's own `RWTS` routine, front to back, a slot of 2 sectors at a time, so a song can be as big as the
 disk. DOS itself reads files at only about 1.3 KB/s, and `BLOAD` has no offset or length, which is why `MPLAY` does
 not use DOS to read. A binary (B) file works as well: its 4-byte header is skipped.
 
-The ring is 4 slots of 1 KB. The first four slots are read before the music starts, so a song of up to 4 KB is
+The ring is made of slots of 512 bytes (2 sectors): 4 of them after `BRUN MPLAY`, and `& MPLAY n` sets the number
+(2 to 28). All the slots are read before the music starts, so a song that fits the ring (2 KB by default) is
 read once and the disk is not touched again. A bigger one is streamed: when the music has moved on from a slot,
-the drive is switched on, the music plays 64 more ticks (1.3 s) while it spins up, then the next 4 sectors are read
-(the music stops for that, 0.1-0.4 s) and the music goes on. The five test songs (the files in `mbf_out\`) take 129,792
+the drive is switched on, the music plays 64 more ticks (1.3 s) while it spins up, then the next 2 sectors are read
+(the music stops for that, 0.06-0.35 s) and the music goes on. The five test songs (the files in `mbf_out\`) take 129,792
 of the disk's 143,360 bytes.
 
 ## The `.MBF` file format
@@ -112,25 +116,27 @@ parameter list with `LOCRPL` (`$03E3`) and reads through `RWTS` (`$03D9`).
 **Looping a streamed song.** The driver's own loop flag only works while the whole song is in
 RAM. When `MB_POLL` reports that a streamed song has ended, call `STREAM_RESTART`: it refills
 the ring from the start of the file and starts the song again (C set = disk error). The music is silent
-while it reads the four slots, about 0.5 s, plus the drive's spin-up. `& MPLAY "NAME",1` does this.
+while it reads all the slots (about 0.12 s per slot), plus the drive's spin-up. `& MPLAY "NAME",1` does this.
 
 ## Memory map of `MPLAY`
 
-`BRUN MPLAY` loads the file at `$7D00` and lowers `HIMEM` to `$6900`. Everything it uses is in `$6900-$89FF`.
+`BRUN MPLAY` loads the file at `$7D00` and lowers `HIMEM` to `$7100`. Everything it uses is in `$7100-$89FF`. The ring
+is the only part whose size changes: it ends at `$78FF` and `& MPLAY n` moves its start (and `HIMEM`) down for a bigger
+one, or up for a smaller one, so nothing else ever moves.
 
 | Range | Use |
 | --- | --- |
-| `$6900-$78FF` | the song ring: 4 slots of 1 KB. A text tune is compiled into it too (3,840 bytes at most) |
+| `$7100-$78FF` | the song ring: 4 slots of 512 bytes (2 KB) after `BRUN`; `& MPLAY n` makes it n slots, `$7900 - n * $200`. A text tune is compiled into it too (the ring less one page: 1,792 bytes after `BRUN`). It is not part of the file |
 | `$7900-$793F` | copy of the ring's first 64 bytes, so a frame can run past the ring end |
 | `$7A00-$7AFF` | sector buffer for the catalog and track/sector lists |
 | `$7B00-$7CFF` | driver, streamer and tune compiler variables |
-| `$7D00-$89FF` | code and tables (3,253 bytes of the file) |
+| `$7D00-$89FF` | code and tables (the file, 3,328 bytes: this part is full to the last byte) |
 | `$06-$09`, `$EB-$EF`, `$FA-$FE` | zero page, while a call runs |
 | `$03F5` | the `&` vector |
 
 It ends under `$8A00`, so it runs unchanged beside KBASIC (`$8A00-$93FF`), `TYPE` (`$8E00`) and the Hangul driver
 (everything below `$4000` and above `$9400`). `ADDON_MEMORY.md` has the whole map and the rules. On a plain DOS 3.3
-disk it works the same: `HIMEM` is `$9600` there, and `BRUN MPLAY` still lowers it to `$6900`.
+disk it works the same: `HIMEM` is `$9600` there, and `BRUN MPLAY` still lowers it to `$7100`.
 
 ## Tests
 
@@ -138,7 +144,7 @@ disk it works the same: `HIMEM` is `$9600` there, and `BRUN MPLAY` still lowers 
 (headless, Phasor card in Mockingboard mode, about 20 minutes). A Lua script logs every AY register write seen on
 the 6522 bus, and `check_log.py` compares them with the `.MBF` file:
 
-- the ring holds, at the first note, exactly the first 4 KB of the file (the disk reads are right)
+- the ring holds, at the first note, exactly the first bytes of the file that fit it (the disk reads are right)
 - every song plays through with all register writes matching, in order (Arty, Chopin, Mozart, Bliss with its drums,
   Hotel California); the refill pauses are measured, the silence and volume-restore writes around each match
   the music's state, and the music is on time once the pauses are taken out
@@ -164,11 +170,16 @@ the 6522 bus, and `check_log.py` compares them with the `.MBF` file:
   Mockingboard or a real Disk II. The sector order and the read times come from MAME's disk emulation, and
   the 1.3 s spin-up allowance is a guess for a real drive.
 - **Streaming pauses the music** for the time the sectors take, because a stock DOS 3.3
-  disk read stops the CPU. Hotel California (43 KB) pauses 39 times, 0.2-0.4 s each, about every 10 s; a denser
-  song pauses more often. Smooth streaming would need a custom disk reader with an
-  interrupt-driven tick, which is not built.
-- **The ring is small** (4 KB) to leave BASIC its memory on the Hangul disk: 10,495 bytes remain there with KBASIC and
-  `MPLAY` loaded. More slots, or bigger ones, mean fewer pauses; change `mb_layout.inc` and `mb_basic.cfg`.
+  disk read stops the CPU. With the ring `BRUN MPLAY` makes (4 slots of 512 bytes, MAME) a pause is 0.06-0.37 s: Chopin
+  pauses 12 times (1.9 s in all over 2 minutes), Mozart 39 times (5.8 s), Bliss 61 times (9.4 s), Hotel California (43 KB) 82
+  times (13.7 s in 6.5 minutes); a denser song pauses more often. A ring of 8 slots halves Chopin to 8 pauses
+  (1.3 s). Smooth streaming would need a custom disk reader with an interrupt-driven tick, which is not built.
+- **The ring is small** (2 KB after `BRUN`) to leave BASIC its memory on the Hangul disk: 12,543 bytes remain there with KBASIC
+  and `MPLAY` loaded. The earlier 4 KB ring gave 10,495 bytes and about half as many pauses (Hotel California 39, 10.6 s in
+  all). `& MPLAY n` lets the program choose per run: more slots, fewer pauses; fewer slots, more BASIC memory (2 slots:
+  13,567 bytes, 14 pauses for Chopin). The slot size and the default are in `mb_layout.inc`.
+- **`MPLAY` fills its part of the block to the byte** (3,328 bytes under `$8A00`); a bigger program needs the ring moved
+  down another page or code trimmed.
 - Needs standard DOS 3.3 in memory (`RWTS` at `$03D9`, its parameter list from `$03E3`).
 - **Timing.** The driver assumes the 1,022,727 Hz clock (same as the PRD and MAME).
   MAME shows a steady 22.5 ppm slow tick (4.6 ms over 206 s). A real NTSC Apple II averages

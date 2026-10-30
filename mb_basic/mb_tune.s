@@ -2,17 +2,18 @@
 ;
 ; The same compiler as src/tune/tune2mbf.py, step for step: both must produce the same bytes
 ; (the tests in test/ check that). The tune format is described there. Up to 6 voices
-; separated by "/"; the song is built in the player's ring (RING_HI, see mb_layout.inc) and is
-; a little less than 4 KB long at most.
+; separated by "/"; the song is built in the player's ring (from page ring_hi, see mb_layout.inc) and is
+; a little less than the ring long at most (1,792 bytes with the ring of 4 slots that BRUN MPLAY makes).
 ;
 ;   TUNE_COMPILE   in:  A/X = low/high address of the tune text, Y = its length (0-255)
-;                  out: the .MBF file at RING_HI * 256, ready for MB_PLAY
+;                  out: the .MBF file at ring_hi * 256, ready for MB_PLAY
 ; Text bytes may have the high bit set or clear, upper or lower case.
 ; Zero page: $06-$09 and $EB-$EE (Applesoft leaves them alone).
 
         .setcpu "6502"
 
         .export TUNE_COMPILE
+        .import ring_hi
 
 TP              = $06           ; read pointer into the tune text
 OP              = $08           ; write pointer into the output
@@ -21,7 +22,6 @@ SP              = $ED           ; source text while it is copied
 
         .include "mb_layout.inc"
 
-OUT_HI          = RING_HI       ; output starts at the start of the ring
 LIMIT_HI        = TAIL_HI - 1   ; stop starting new frames on the last page of the ring
 MAX_VOICES      = 6
 WHOLE_120       = 100           ; ticks per whole note at 120 quarter notes a minute (50 Hz)
@@ -154,7 +154,7 @@ TUNE_COMPILE:
 
         lda     #0
         sta     OP
-        lda     #OUT_HI
+        lda     ring_hi         ; the output starts at the start of the ring
         sta     OP+1
         ldx     #0
 @hd:    lda     header,x

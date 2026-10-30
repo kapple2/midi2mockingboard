@@ -39,10 +39,10 @@ $badDisk = Join-Path $t 'mb_bad.dsk'
 & $py "$root\src\mb_disk\build_disk.py" $badDisk "$bad\1 JUNK.MBF" "$bad\2 SLOW.MBF" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'bad-song disk build failed' }
 
-function Tune($name, $text) {
+function Tune($name, $text, $slots = 4) {
     # the text goes in a file: an empty argument would be dropped on the command line
     Set-Content "$t\$name.txt" $text -NoNewline
-    & $py "$root\src\tune\tune2mbf.py" -o "$t\$name.MBF" -f "$t\$name.txt" | Out-Null
+    & $py "$root\src\tune\tune2mbf.py" -o "$t\$name.MBF" -f "$t\$name.txt" --ring-slots $slots | Out-Null
     return "$t\$name.MBF"
 }
 
@@ -61,7 +61,7 @@ function Play($file, $flags) { $f = if ($flags) { ",$flags" } else { '' }; retur
 
 # --- the songs on the real disk, streamed from their catalog files ---------------------------------
 Check 'Arty plays in full'                { & $run -Disk $disk -Play (Play $arty) -Expect $arty -Stream }
-Check 'Chopin plays in full (7 refills)'  { & $run -Disk $disk -Play (Play $chopin) -Expect $chopin -Stream }
+Check 'Chopin plays in full'              { & $run -Disk $disk -Play (Play $chopin) -Expect $chopin -Stream }
 Check 'Mozart plays in full'              { & $run -Disk $disk -Play (Play $mozart) -Expect $mozart -Stream }
 Check 'Bliss plays in full (drums)'       { & $run -Disk $disk -Play (Play $bliss) -Expect $bliss -Stream }
 Check 'Hotel California plays in full'    { & $run -Disk $disk -Play (Play $hotel) -Expect $hotel -Stream }
@@ -72,6 +72,17 @@ Check 'sound effect while streaming'      { & $run -Disk $disk -Play (Play $hote
 foreach ($slot in 4, 7, 1) {
     Check "card in slot $slot"            { & $run -Disk $disk -Play (Play $arty) -Expect $arty -Stream -Slot $slot }
 }
+# --- the ring size: & MPLAY n moves HIMEM and sets how many 512-byte slots the song ring has ----------------
+# (the check also compares the ring's contents at the first note with the first bytes of the file, so it sees the size)
+$chopinPlay = Play $chopin
+Check 'ring: 2 slots (the minimum)'       { & $run -Disk $disk -Lines ('& MPLAY 2|' + $chopinPlay + ': PRINT "FIN";"ISHED"') -Expect $chopin -Stream }
+Check 'ring: 8 slots'                     { & $run -Disk $disk -Lines ('& MPLAY 8|' + $chopinPlay + ': PRINT "FIN";"ISHED"') -Expect $chopin -Stream }
+Check 'ring: 28 slots (the maximum), no refill'      { & $run -Disk $disk -Lines ('& MPLAY 28|' + $chopinPlay + ': PRINT "FIN";"ISHED"') -Expect $chopin -Stream }
+Check 'ring: HIMEM after BRUN is $7100'   { & $run -Disk $disk -Play 'PRINT "HI";PEEK (116)' -Expect $arty -ExpectError 'HI113' }
+Check 'ring: HIMEM follows & MPLAY 8'     { & $run -Disk $disk -Play '& MPLAY 8: PRINT "HI";PEEK (116)' -Expect $arty -ExpectError 'HI105' }
+Check 'ring: 1 slot is ILLEGAL QUANTITY'  { & $run -Disk $disk -Play '& MPLAY 1' -Expect $arty -ExpectError 'ILLEGAL QUANTITY' }
+Check 'ring: 29 slots is ILLEGAL QUANTITY' { & $run -Disk $disk -Play '& MPLAY 29' -Expect $arty -ExpectError 'ILLEGAL QUANTITY' }
+Check 'ring: after a string exists, OUT OF MEMORY' { & $run -Disk $disk -Play 'A$ = "AB" + "CD": & MPLAY 6' -Expect $arty -ExpectError 'OUT OF MEMORY' }
 Check 'no card: I/O ERROR'      { & $run -Disk $disk -Play (Play $arty) -Expect $arty -NoCard }
 Check 'bad song: not an MBF file'         { & $run -Disk $badDisk -Play '& MPLAY "1 JUNK.MBF"' -Expect $arty -ExpectBad }
 Check 'bad song: tick rate below 16 Hz'   { & $run -Disk $badDisk -Play '& MPLAY "2 SLOW.MBF"' -Expect $arty -ExpectBad }
@@ -89,9 +100,10 @@ Check 'tune: two voices, scale and chords' { & $run -Disk $disk -Play "& MPLAY `
 $rich = 'T90 O5 L16 C#D-EF+G.A4. R8 B>C<B R T200 V8 O0 C1 O7 B#2 / T150 V15 O2 L8 CDEFGAB / L1 R O3 G / V3 O4 C4C4C4C4 / T255 L64 CCCCCCCC / O1 V9 L2. A / O4 CDE'
 Check 'tune: every command, 6 voices, a 7th ignored' { & $run -Disk $disk -Play "& MPLAY `"!$rich`"" -Expect (Tune 'rich' $rich) }
 Check 'tune: empty'                       { & $run -Disk $disk -Play '& MPLAY "!"' -Expect (Tune 'empty' '') }
-# a tune longer than the buffer: 20 whole notes of 9 seconds overflow the 3.8 KB the ring leaves
+# a tune longer than the buffer: 20 whole notes of 9 seconds overflow the 1.8 KB the 4-slot ring leaves
 $long = 'T32 L1. C C C C C C C C C C C C C C C C C C C C'
 Check 'tune: longer than the buffer, cut off and silenced' { & $run -Disk $disk -Play "& MPLAY `"!$long`"" -Expect (Tune 'long' $long) }
+Check 'tune: the same with a ring of 8 slots (3.8 KB)' { & $run -Disk $disk -Lines ('& MPLAY 8|& MPLAY "!' + $long + '": PRINT "FIN";"ISHED"') -Expect (Tune 'long8' $long 8) }
 $prog = 'NEW|10 A$ = "!' + $scale + '": & MPLAY A$|20 PRINT "FIN";"ISHED"|RUN'
 Check 'tune in a string variable, inside a program' { & $run -Disk $disk -Lines $prog -Expect (Tune 'scale' $scale) }
 
@@ -102,6 +114,8 @@ if (Test-Path $Kbasic) {
     if ($LASTEXITCODE -ne 0) { throw 'KBASIC disk build failed' }
     Check 'KBASIC disk: Chopin streams, Hangul driver untouched' {
         & $run -Disk $kdisk -Hangul -Play (Play $chopin) -Expect $chopin -Stream }
+    Check 'KBASIC disk: ring of 8 slots, Chopin' {
+        & $run -Disk $kdisk -Hangul -Lines ('& MPLAY 8|' + $chopinPlay + ': POKE 800,66') -Expect $chopin -Stream }
     Check 'KBASIC disk: a tune' { & $run -Disk $kdisk -Hangul -Play "& MPLAY `"!$scale`"" -Expect (Tune 'scale' $scale) }
 }
 else { Write-Host "(no ${Kbasic}: the KBASIC checks are skipped)" }
